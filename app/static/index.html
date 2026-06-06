@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>炒股辅助软件原型</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #080b13; color: #e8edf7; }
+    header { padding: 24px 32px; background: linear-gradient(135deg, #172554, #0f172a); border-bottom: 1px solid #22304f; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    main { display: grid; gap: 18px; grid-template-columns: 1.35fr .65fr; padding: 24px 32px; }
+    section { background: #0f172a; border: 1px solid #1f2a44; border-radius: 18px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+    .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .card { background: #111c31; border-radius: 14px; padding: 14px; border: 1px solid #263653; }
+    .symbol { color: #94a3b8; font-size: 13px; }
+    .price { font-size: 26px; font-weight: 800; margin-top: 4px; }
+    .up { color: #22c55e; } .down { color: #ef4444; }
+    canvas { width: 100%; height: 320px; background: #0b1120; border-radius: 14px; border: 1px solid #263653; }
+    button, input { border-radius: 10px; border: 1px solid #334155; background: #111827; color: #e5e7eb; padding: 10px 12px; }
+    button { cursor: pointer; background: #2563eb; border-color: #3b82f6; font-weight: 700; }
+    ul { padding-left: 18px; }
+    li { margin-bottom: 10px; color: #cbd5e1; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>炒股辅助软件原型</h1>
+    <div>WebSocket 2 秒刷新行情、指标图、资讯、策略选股、AI 训练与纸面券商接口的最小可运行版本。</div>
+  </header>
+  <main>
+    <section>
+      <h2>实时行情</h2>
+      <div class="cards" id="quotes"></div>
+      <h2>指标图：价格 / MA5 / MA20 / RSI14</h2>
+      <canvas id="chart" width="900" height="320"></canvas>
+    </section>
+    <aside>
+      <section>
+        <h2>策略选股</h2>
+        <button id="runStrategy">运行动量 + 成交量筛选</button>
+        <ul id="picks"></ul>
+      </section>
+      <section>
+        <h2>相关新闻</h2>
+        <ul id="news"></ul>
+      </section>
+      <section>
+        <h2>纸面交易</h2>
+        <input id="orderSymbol" value="AAPL" aria-label="股票代码" />
+        <button id="buyButton">模拟买入 1 股</button>
+        <div id="orderResult"></div>
+      </section>
+    </aside>
+  </main>
+<script>
+const watchlist = ["AAPL", "MSFT", "NVDA", "TSLA"];
+const quoteRoot = document.querySelector("#quotes");
+const chart = document.querySelector("#chart");
+const ctx = chart.getContext("2d");
+
+function renderQuotes(quotes) {
+  quoteRoot.innerHTML = quotes.map(q => `
+    <div class="card">
+      <div class="symbol">${q.symbol} · 延迟 ${q.latency_ms}ms</div>
+      <div class="price">$${q.price.toFixed(2)}</div>
+      <div class="${q.change >= 0 ? "up" : "down"}">${q.change >= 0 ? "+" : ""}${q.change.toFixed(2)} (${q.change_percent.toFixed(2)}%)</div>
+      <div class="symbol">Bid ${q.bid.toFixed(2)} / Ask ${q.ask.toFixed(2)} · Vol ${q.volume.toLocaleString()}</div>
+    </div>`).join("");
+}
+
+async function drawIndicators(symbol = "AAPL") {
+  const data = await fetch(`/api/indicators/${symbol}?points=120`).then(r => r.json());
+  ctx.clearRect(0, 0, chart.width, chart.height);
+  const prices = data.map(p => p.price);
+  const min = Math.min(...prices) * .995;
+  const max = Math.max(...prices) * 1.005;
+  const scaleX = i => 30 + i * ((chart.width - 60) / (data.length - 1));
+  const scaleY = v => chart.height - 30 - ((v - min) / (max - min || 1)) * (chart.height - 60);
+  function line(values, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    values.forEach((v, i) => i ? ctx.lineTo(scaleX(i), scaleY(v)) : ctx.moveTo(scaleX(i), scaleY(v)));
+    ctx.stroke();
+  }
+  line(data.map(p => p.price), "#60a5fa");
+  line(data.map(p => p.ma5), "#22c55e");
+  line(data.map(p => p.ma20), "#f59e0b");
+  ctx.fillStyle = "#94a3b8";
+  ctx.fillText(`${symbol}  蓝=价格  绿=MA5  橙=MA20  最新 RSI14=${data.at(-1).rsi14}`, 30, 22);
+}
+
+async function loadNews() {
+  const items = await fetch("/api/news?limit=8").then(r => r.json());
+  document.querySelector("#news").innerHTML = items.map(n => `<li><strong>${n.symbol}</strong> ${n.title}<br><small>${n.source} · ${n.sentiment}</small></li>`).join("");
+}
+
+document.querySelector("#runStrategy").addEventListener("click", async () => {
+  const picks = await fetch("/api/strategies/run", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({universe: watchlist, rule: {min_price: 1, max_price: 1000, min_volume: 100000, min_momentum_percent: -5}})
+  }).then(r => r.json());
+  document.querySelector("#picks").innerHTML = picks.map(p => `<li><strong>${p.symbol}</strong> 分数 ${p.score}<br>${p.reasons.join("；")}</li>`).join("");
+});
+
+document.querySelector("#buyButton").addEventListener("click", async () => {
+  const symbol = document.querySelector("#orderSymbol").value;
+  const order = await fetch("/api/broker/orders", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({symbol, side: "buy", quantity: 1, order_type: "market"})
+  }).then(r => r.json());
+  document.querySelector("#orderResult").textContent = `${order.status}: ${order.message} @ ${order.filled_price}`;
+});
+
+const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/quotes/${watchlist.join(",")}`);
+socket.onmessage = event => renderQuotes(JSON.parse(event.data));
+drawIndicators();
+loadNews();
+setInterval(() => drawIndicators(), 5000);
+setInterval(loadNews, 30000);
+</script>
+</body>
+</html>
